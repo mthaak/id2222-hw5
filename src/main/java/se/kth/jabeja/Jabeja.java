@@ -8,7 +8,13 @@ import se.kth.jabeja.rand.RandNoGenerator;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Random;
+
+import static java.lang.Math.exp;
+import static java.lang.Math.pow;
 
 public class Jabeja {
   final static Logger logger = Logger.getLogger(Jabeja.class);
@@ -20,16 +26,34 @@ public class Jabeja {
   private float T;
   private boolean resultFileCreated = false;
 
+  private Variation var = Variation.LINEAR;
+  private boolean reset = false;
+  private boolean smartRedistribute = true;
   //-------------------------------------------------------------------
   public Jabeja(HashMap<Integer, Node> graph, Config config) {
+    // Additional settings
+    config.setNodeSelectionPolicy(NodeSelectionPolicy.RANDOM);
+
+    switch (var) {
+      case LINEAR:
+        break;
+      case EXPONENTIAL:
+        config.setTemperature(1.0f);
+        config.setDelta(0.99f);
+        break;
+    }
+
     this.entireGraph = graph;
     this.nodeIds = new ArrayList(entireGraph.keySet());
     this.round = 0;
     this.numberOfSwaps = 0;
     this.config = config;
     this.T = config.getTemperature();
-  }
 
+    if (smartRedistribute) {
+      Reinit.redistributeColors(entireGraph, config);
+    }
+  }
 
   //-------------------------------------------------------------------
   public void startJabeja() throws IOException {
@@ -40,7 +64,10 @@ public class Jabeja {
 
       //one cycle for all nodes have completed.
       //reduce the temperature
-      saCoolDown();
+      if (var == Variation.LINEAR)
+        saCoolDownLinear();
+      else if (var == Variation.EXPONENTIAL)
+        saCoolDownExponential();
       report();
     }
   }
@@ -48,61 +75,107 @@ public class Jabeja {
   /**
    * Simulated analealing cooling function
    */
-  private void saCoolDown(){
-    // TODO for second task
-    if (T > 1)
+  private void saCoolDownLinear() {
+    if (T > 1) {
       T -= config.getDelta();
-    if (T < 1)
-      T = 1;
+    } else {
+      if (reset)
+        T = config.getTemperature();
+      else
+        T = 1;
+    }
+  }
+
+  private void saCoolDownExponential() {
+    T *= config.getDelta();
+    if (T < 0.001 && reset)
+      T = config.getTemperature();
   }
 
   /**
    * Sample and swap algorith at node p
+   *
    * @param nodeId
    */
   private void sampleAndSwap(int nodeId) {
     Node partner = null;
     Node nodep = entireGraph.get(nodeId);
 
+    // Swap with random neighbors
     if (config.getNodeSelectionPolicy() == NodeSelectionPolicy.HYBRID
             || config.getNodeSelectionPolicy() == NodeSelectionPolicy.LOCAL) {
-      // swap with random neighbors
-      // TODO
+      Integer neighbours[] = getNeighbors(nodep);
+      partner = findPartner(nodeId, neighbours);
     }
 
-    if (config.getNodeSelectionPolicy() == NodeSelectionPolicy.HYBRID
+    // If local policy fails then randomly sample the entire graph
+    if ((config.getNodeSelectionPolicy() == NodeSelectionPolicy.HYBRID && partner == null)
             || config.getNodeSelectionPolicy() == NodeSelectionPolicy.RANDOM) {
-      // if local policy fails then randomly sample the entire graph
-      // TODO
+      Integer sample[] = getSample(nodeId);
+      partner = findPartner(nodeId, sample);
     }
 
-    // swap the colors
-    // TODO
+    // Swap the colors
+    if (partner != null) {
+      int partnerColor = partner.getColor();
+      partner.setColor(nodep.getColor());
+      nodep.setColor(partnerColor);
+      numberOfSwaps++;
+    }
   }
 
-  public Node findPartner(int nodeId, Integer[] nodes){
+  public Node findPartner(int nodeId, Integer[] nodes) {
 
     Node nodep = entireGraph.get(nodeId);
 
     Node bestPartner = null;
     double highestBenefit = 0;
 
-    // TODO
+    Float a = config.getAlpha();
+
+    for (Integer q : nodes) {
+      Node nodeq = entireGraph.get(q);
+      int dpp = getDegree(nodep, nodep.getColor());
+      int dqq = getDegree(nodeq, nodeq.getColor());
+      double oldC = pow(dpp, a) + pow(dqq, a);
+      int dpq = getDegree(nodep, nodeq.getColor());
+      int dqp = getDegree(nodeq, nodep.getColor());
+      double newC = pow(dpq, a) + pow(dqp, a);
+      if (acceptSolution(oldC, newC, highestBenefit)) {
+        bestPartner = nodeq;
+        highestBenefit = newC;
+      }
+      if (var == Variation.EXPONENTIAL)
+        break; // only try one partner
+    }
 
     return bestPartner;
   }
 
+  private boolean acceptSolution(double oldC, double newC, double highestBenefit) {
+    switch (var) {
+      case LINEAR:
+        return newC > highestBenefit && newC * T > oldC;
+      case EXPONENTIAL:
+        Random r = new Random();
+        return r.nextDouble() < exp((1 / oldC - 1 / newC) / T);
+      default:
+        return false;
+    }
+  }
+
   /**
    * The the degreee on the node based on color
+   *
    * @param node
    * @param colorId
    * @return how many neighbors of the node have color == colorId
    */
-  private int getDegree(Node node, int colorId){
+  private int getDegree(Node node, int colorId) {
     int degree = 0;
-    for(int neighborId : node.getNeighbours()){
+    for (int neighborId : node.getNeighbours()) {
       Node neighbor = entireGraph.get(neighborId);
-      if(neighbor.getColor() == colorId){
+      if (neighbor.getColor() == colorId) {
         degree++;
       }
     }
@@ -111,6 +184,7 @@ public class Jabeja {
 
   /**
    * Returns a uniformly random sample of the graph
+   *
    * @param currentNodeId
    * @return Returns a uniformly random sample of the graph
    */
@@ -139,6 +213,7 @@ public class Jabeja {
    * Get random neighbors. The number of random neighbors is controlled using
    * -closeByNeighbors command line argument which can be obtained from the config
    * using {@link Config#getRandomNeighborSampleSize()}
+   *
    * @param node
    * @return
    */
@@ -169,7 +244,6 @@ public class Jabeja {
     Integer[] arr = new Integer[rndIds.size()];
     return rndIds.toArray(arr);
   }
-
 
   /**
    * Generate a report which is stored in a file in the output dir.
@@ -206,7 +280,8 @@ public class Jabeja {
     logger.info("round: " + round +
             ", edge cut:" + edgeCut +
             ", swaps: " + numberOfSwaps +
-            ", migrations: " + migrations);
+            ", migrations: " + migrations +
+            ", T: " + T);
 
     saveToFile(edgeCut, migrations);
   }
@@ -219,15 +294,7 @@ public class Jabeja {
     File inputFile = new File(config.getGraphFilePath());
     outputFilePath = config.getOutputDir() +
             File.separator +
-            inputFile.getName() + "_" +
-            "NS" + "_" + config.getNodeSelectionPolicy() + "_" +
-            "GICP" + "_" + config.getGraphInitialColorPolicy() + "_" +
-            "T" + "_" + config.getTemperature() + "_" +
-            "D" + "_" + config.getDelta() + "_" +
-            "RNSS" + "_" + config.getRandomNeighborSampleSize() + "_" +
-            "URSS" + "_" + config.getUniformRandomSampleSize() + "_" +
-            "A" + "_" + config.getAlpha() + "_" +
-            "R" + "_" + config.getRounds() + ".txt";
+            inputFile.getName() + ".txt";
 
     if (!resultFileCreated) {
       File outputDir = new File(config.getOutputDir());
@@ -245,4 +312,6 @@ public class Jabeja {
 
     FileIO.append(round + delimiter + (edgeCuts) + delimiter + numberOfSwaps + delimiter + migrations + "\n", outputFilePath);
   }
+
+  private enum Variation {LINEAR, EXPONENTIAL}
 }

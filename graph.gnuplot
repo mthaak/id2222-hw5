@@ -2,8 +2,8 @@
 #set output '| ps2pdf - graph.eps'
 
 set term png small size 1024,786
-set output 'graph.png'
-
+#set output 'graph.png'
+set output filename . '.png'
 
 
 set style line 1 lc rgb "#1a9850" lw 1.5
